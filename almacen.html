@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Almacén</title></head>
+<body>
+<script>
+/* Almacen compartido del Navegador Alejandro.
+   Las paginas que visitas no comparten datos entre si; esta pagina (en GitHub Pages)
+   se carga oculta y guarda favoritos e historial en un solo lugar.
+   - El historial solo se puede ESCRIBIR desde afuera (ninguna pagina puede leerlo).
+   - Los favoritos se pueden pedir para mostrarlos en el menu. */
+(function () {
+  var MAX_HIST = 100, MAX_FAV = 24;
+  // los mismos favoritos de ejemplo que muestra el inicio cuando todavia no hay propios
+  var POR_DEFECTO = [
+    { n: 'Google', u: 'https://www.google.com/' },
+    { n: 'TikTok', u: 'https://www.tiktok.com/' },
+    { n: 'Wikipedia', u: 'https://es.wikipedia.org/' },
+    { n: 'Claude', u: 'https://claude.ai/' },
+    { n: 'Gmail', u: 'https://mail.google.com/' },
+    { n: 'Noticias', u: 'https://news.google.com/?hl=es-419&gl=CO&ceid=CO:es-419' }
+  ];
+  function leer(k) { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch (e) { return []; } }
+  function guardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function limpia(u) { return /^https?:\/\//i.test(String(u || '')) ? String(u).slice(0, 2000) : null; }
+
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || d.__navAle !== 1) return;
+    if (d.t === 'hist') {
+      var u = limpia(d.u); if (!u) return;
+      var h = leer('navAleHist').filter(function (x) { return x.u !== u; });
+      h.unshift({ u: u, n: String(d.n || '').slice(0, 120), ts: Date.now() });
+      guardar('navAleHist', h.slice(0, MAX_HIST));
+    } else if (d.t === 'fav+') {
+      var f = limpia(d.u); if (!f) return;
+      var actuales = leer('navAleFavs');
+      if (!actuales.length) actuales = POR_DEFECTO.slice();   // el primero se suma a los de ejemplo
+      var lista = actuales.filter(function (x) { return x.u !== f; });
+      lista.unshift({ u: f, n: String(d.n || f).slice(0, 40) });
+      guardar('navAleFavs', lista.slice(0, MAX_FAV));
+    } else if (d.t === 'favs?') {
+      e.source.postMessage({ __navAle: 1, t: 'favs', lista: leer('navAleFavs').slice(0, 12) }, e.origin);
+    }
+  });
+  try { window.parent.postMessage({ __navAle: 1, t: 'listo' }, '*'); } catch (e) {}
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+# Lista de bloqueo extra del Navegador Alejandro
+# Un dominio por linea. El TV la descarga sola cada 6 horas (no hace falta nueva version).
+# Para que se actualice de inmediato: purgar
+#   https://purge.jsdelivr.net/gh/caceres0128/navegador-tv@main/lista.txt
+# Las lineas que empiezan con # son comentarios.
+
+# Redes de anuncios y rastreo adicionales
+adnxs-simple.com
+adsrvr.org
+bidswitch.net
+contextweb.com
+demdex.net
+everesttech.net
+indexww.com
+krxd.net
+mathtag.com
+outbrainimg.com
+pubmine.com
+rlcdn.com
+serving-sys.com
+tapad.com
+turn.com
+yieldmo.com
+zemanta.com
