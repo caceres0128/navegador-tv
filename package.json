@@ -1,10 +1,10 @@
-   {
-     "name": "navegador-tv",
-     "appName": "Navegador Alejandro",
-     "version": "1.1.1",
-     "description": "Navegador ligero para el TV: cursor con flechas, menu con favoritos, bloqueo de anuncios y pop-ups.",
-     "packageType": "mods",
-     "websiteURL": "https://www.google.com/",
-     "main": "inject.js",
-     "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]
-   }
+{
+  "name": "navegador-tv",
+  "appName": "Navegador Alejandro",
+  "version": "1.2.0",
+  "description": "Navegador ligero para el TV: cursor fluido (flechas y touchpad), menu con favoritos, bloqueo de anuncios y pop-ups.",
+  "packageType": "mods",
+  "websiteURL": "https://www.google.com/",
+  "main": "inject.js",
+  "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]
+}
