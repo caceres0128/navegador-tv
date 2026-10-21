@@ -16,6 +16,10 @@
   'use strict';
   if (window.__navAlejandro) return;
   window.__navAlejandro = true;
+  // Con el inicio temprano el script tambien entra en iframes y podria entrar en la
+  // pantalla local de TizenBrew: en esta ultima no hace nada.
+  if (location.protocol === 'file:' || !location.hostname) return;
+  var ES_PRINCIPAL = (function () { try { return window.top === window; } catch (e) { return false; } })();
 
   // ===================== CONFIGURACION (edita aqui) =====================
   var FAVORITOS = [
@@ -68,6 +72,7 @@
   var bloqueados = 0;
   function avisoBloqueo(texto, sinNumero) {
     if (!sinNumero) bloqueados++;
+    if (!ES_PRINCIPAL) return;
     try {
       var t = document.getElementById('nav-alejandro-toast');
       if (!t) {
@@ -107,7 +112,7 @@
   }, true);
 
   // (b) Redirecciones forzadas: se cancelan si van a otro sitio que tu no elegiste
-  if (window.navigation && navigation.addEventListener) {
+  if (ES_PRINCIPAL && window.navigation && navigation.addEventListener) {
     navigation.addEventListener('navigate', function (e) {
       if (!escudo || !e.cancelable) return;
       if (e.navigationType === 'traverse' || e.navigationType === 'reload') return;  // Atras / recargar
@@ -226,6 +231,18 @@
     }).observe(document, { childList: true, subtree: true });
   } catch (e) {}
 
+  // Barrido inicial: el modulo se carga cuando la pagina ya empezo, asi que se quitan
+  // los iframes, imagenes y scripts de anuncios que ya esten puestos
+  function barrer() {
+    try {
+      var ns = document.querySelectorAll('script[src],iframe,img,embed,object,link[rel]');
+      for (var i = 0; i < ns.length; i++) revisarNodo(ns[i]);
+    } catch (e) {}
+  }
+  barrer();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', barrer);
+  window.addEventListener('load', barrer);
+
   // 2) Scripts e iframes que la pagina mete despues con JavaScript
   ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {
     var orig = Node.prototype[m];
@@ -305,6 +322,12 @@
     s.id = 'nav-alejandro-css';
     s.textContent = CSS_ANUNCIOS;
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  if (!ES_PRINCIPAL) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', inyectarCSS);
+    else inyectarCSS();
+    return;
   }
 
   // ---------------------------------------------------------------- CURSOR
@@ -525,6 +548,48 @@
     }
   }
 
+  // ---- Modo saltos: las flechas saltan al siguiente boton/enlace en esa direccion ----
+  var modoSaltos = false;
+  try { modoSaltos = localStorage.getItem('navAlejandroSaltos') === '1'; } catch (e) {}
+
+  function candidatos() {
+    var lista = [], w = window.innerWidth, h = window.innerHeight;
+    var ns = document.querySelectorAll(CLICABLE);
+    for (var i = 0; i < ns.length && lista.length < 400; i++) {
+      var r = ns[i].getBoundingClientRect();
+      if (r.width < 6 || r.height < 6 || r.bottom < 0 || r.top > h || r.right < 0 || r.left > w) continue;
+      if (r.width > w * 0.9 && r.height > h * 0.6) continue;           // contenedores gigantes no
+      var cx = Math.max(4, Math.min(w - 4, r.left + r.width / 2));
+      var cy = Math.max(4, Math.min(h - 4, r.top + r.height / 2));
+      var top = document.elementFromPoint(cx, cy);
+      if (top && top !== ns[i] && !ns[i].contains(top) && !top.contains(ns[i])) continue;  // tapado
+      lista.push({ x: cx, y: cy });
+    }
+    return lista;
+  }
+
+  function saltar(dx, dy) {
+    crearCursor(); mostrar();
+    var mejor = null, puntaje = Infinity, lista = candidatos();
+    for (var i = 0; i < lista.length; i++) {
+      var vx = lista[i].x - cur.x, vy = lista[i].y - cur.y;
+      var adelante = vx * dx + vy * dy;                 // avance en la direccion pedida
+      if (adelante < 12) continue;
+      var lateral = Math.abs(vx * dy - vy * dx);        // desvio a los lados
+      if (lateral > adelante * 2) continue;             // fuera del cono (~63 grados)
+      var p = adelante + lateral * 2.2;
+      if (p < puntaje) { puntaje = p; mejor = lista[i]; }
+    }
+    if (mejor) {
+      raton.tx = mejor.x; raton.ty = mejor.y; raton.vx = raton.vy = 0;
+      if (!raton.bucle) { raton.bucle = true; requestAnimationFrame(deslizar); }
+      alDetenerse(true);
+    } else if (dy) {
+      scroll(dy * window.innerHeight * 0.45, true);     // nada en esa direccion: desplazar
+      alDetenerse(true);
+    }
+  }
+
   function pararMovimiento() {
     cur.dx = cur.dy = 0;
   }
@@ -643,6 +708,7 @@
       '<button class="it" data-a="cursor">✛ Centrar cursor</button>' +
       '<button class="it" data-a="escudo">' + (escudo ? '🛡 Escudo: ON' : '🛡 Escudo: OFF') + '</button>' +
       '<button class="it" data-a="limpiar">🧹 Limpiar sitio</button>' +
+      '<button class="it" data-a="saltos">' + (modoSaltos ? '🎯 Saltos: ON' : '🎯 Saltos: OFF') + '</button>' +
       '</div>' +
       '<div class="ayuda">Flechas: moverse · OK: elegir · Play/Pausa o Atrás: cerrar menú</div>' +
       '</div></div>';
@@ -707,6 +773,11 @@
         setTimeout(function () { location.reload(); }, 400);   // aplica el cambio al bloqueador
         break;
       case 'limpiar': limpiarSitio(); break;
+      case 'saltos':
+        modoSaltos = !modoSaltos;
+        try { modoSaltos ? localStorage.setItem('navAlejandroSaltos', '1') : localStorage.removeItem('navAlejandroSaltos'); } catch (e) {}
+        b.textContent = modoSaltos ? '🎯 Saltos: ON' : '🎯 Saltos: OFF';
+        break;
       case 'arriba': cerrarMenu(); (document.scrollingElement || document.documentElement).scrollTo({ top: 0, behavior: 'smooth' }); break;
       case 'cursor': cerrarMenu(); cur.x = window.innerWidth / 2; cur.y = window.innerHeight / 2; pedirDibujo(); alDetenerse(true); break;
       case 'video':
@@ -744,10 +815,10 @@
       if (c !== K.ATRAS) return;
       document.activeElement.blur();                          // Atras: solo cierra el teclado
     }
-    else if (c === K.IZQ) empezarMovimiento(-1, 0);
-    else if (c === K.DER) empezarMovimiento(1, 0);
-    else if (c === K.ARRIBA) empezarMovimiento(0, -1);
-    else if (c === K.ABAJO) empezarMovimiento(0, 1);
+    else if (c === K.IZQ) modoSaltos ? saltar(-1, 0) : empezarMovimiento(-1, 0);
+    else if (c === K.DER) modoSaltos ? saltar(1, 0) : empezarMovimiento(1, 0);
+    else if (c === K.ARRIBA) modoSaltos ? saltar(0, -1) : empezarMovimiento(0, -1);
+    else if (c === K.ABAJO) modoSaltos ? saltar(0, 1) : empezarMovimiento(0, 1);
     else if (c === K.OK) clic();
     else if (c === K.CANAL_MAS) scroll(-window.innerHeight * 0.85, true);
     else if (c === K.CANAL_MENOS) scroll(window.innerHeight * 0.85, true);
