@@ -1,11 +1,10 @@
 {
   "name": "navegador-tv",
   "appName": "Navegador Alejandro",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Navegador ligero para el TV: bloqueador de anuncios tipo Brave, escudo anti-redirecciones, cursor fluido y menu con favoritos.",
   "packageType": "mods",
   "websiteURL": "https://www.google.com/",
   "main": "inject.js",
-  "evaluateScriptOnDocumentStart": true,
   "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"]
 }
