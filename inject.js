@@ -66,7 +66,17 @@
   }, true);
 
   // ---------------------------------------------------------------- CURSOR
-  var cur = { x: 960, y: 540, el: null, vel: 12, ultimaTecla: 0, oculto: null };
+  // Motor del cursor optimizado:
+  //  - se mueve con transform (GPU), sin recalcular el diseno de la pagina
+  //  - todo lo costoso (resaltar, hover) se hace como maximo una vez por cuadro
+  //    y solo cuando el cursor se detiene un instante
+  //  - con las flechas, mantener presionado = movimiento continuo y suave a 60 fps
+  var cur = { x: 960, y: 540, el: null, marco: null, oculto: null,
+              dx: 0, dy: 0, vel: 0, inicioMov: 0, ultimoFrame: 0, bucle: false,
+              pendiente: false, quieto: null, teclaVista: 0 };
+  var VEL_INICIAL = 900;   // px por segundo al empezar a mover
+  var VEL_MAX = 2600;      // px por segundo manteniendo presionado
+  var ACELERACION = 0.45;  // segundos hasta llegar a la velocidad maxima
 
   // Flechita tipo mouse (la punta esta en la esquina superior izquierda = punto de clic)
   var FLECHA = '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="44" viewBox="0 0 17 22">' +
@@ -79,14 +89,18 @@
     if (cur.el && document.documentElement.contains(cur.el)) return;
     cur.el = document.createElement('div');
     cur.el.innerHTML = FLECHA;
-    cur.el.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;left:960px;top:540px;' +
-      'filter:drop-shadow(0 0 6px ' + COLOR + ');transition:opacity .3s,transform .1s;transform-origin:0 0';
+    cur.el.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;' +
+      'will-change:transform;filter:drop-shadow(0 0 4px ' + COLOR + ');transition:opacity .25s';
     document.documentElement.appendChild(cur.el);
-    // Recuadro que resalta lo que vas a pulsar
     cur.marco = document.createElement('div');
-    cur.marco.style.cssText = 'position:fixed;z-index:2147483645;pointer-events:none;display:none;' +
-      'border:3px solid ' + COLOR + ';border-radius:10px;box-shadow:0 0 18px ' + COLOR + ';transition:all .12s';
+    cur.marco.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483645;pointer-events:none;display:none;' +
+      'border:3px solid ' + COLOR + ';border-radius:10px;box-shadow:0 0 14px ' + COLOR + ';will-change:transform';
     document.documentElement.appendChild(cur.marco);
+    colocar();
+  }
+
+  function colocar() {   // barato: solo transform
+    cur.el.style.transform = 'translate3d(' + cur.x + 'px,' + cur.y + 'px,0)';
   }
 
   function hayVideoReproduciendo() {
@@ -100,6 +114,7 @@
   }
 
   function resaltar() {
+    if (!cur.marco) return;
     var t = objetivo();
     if (!t || t.tagName === 'VIDEO' || t === document.body) { cur.marco.style.display = 'none'; return; }
     var r = t.getBoundingClientRect();
@@ -107,39 +122,57 @@
       cur.marco.style.display = 'none'; return;     // no resaltar contenedores gigantes
     }
     cur.marco.style.display = 'block';
-    cur.marco.style.left = (r.left - 4) + 'px';
-    cur.marco.style.top = (r.top - 4) + 'px';
     cur.marco.style.width = (r.width + 8) + 'px';
     cur.marco.style.height = (r.height + 8) + 'px';
+    cur.marco.style.transform = 'translate3d(' + (r.left - 4) + 'px,' + (r.top - 4) + 'px,0)';
   }
 
-  function pintarCursor(sinHover) {
-    crearCursor();
-    cur.el.style.left = cur.x + 'px';
-    cur.el.style.top = cur.y + 'px';
+  function hover() {   // los menus que se abren al pasar el mouse tambien funcionan
+    var el = document.elementFromPoint(cur.x, cur.y);
+    if (!el) return;
+    var op = { bubbles: true, clientX: cur.x, clientY: cur.y, view: window };
+    try { el.dispatchEvent(new MouseEvent('mouseover', op)); el.dispatchEvent(new MouseEvent('mousemove', op)); } catch (e) {}
+  }
+
+  // Lo costoso se hace 70 ms despues de que el cursor se detiene (no en cada paso)
+  function alDetenerse(conHover) {
+    clearTimeout(cur.quieto);
+    if (cur.marco) cur.marco.style.display = 'none';
+    cur.quieto = setTimeout(function () {
+      resaltar();
+      if (conHover) hover();
+    }, 70);
+  }
+
+  function mostrar() {
     cur.el.style.opacity = '1';
-    resaltar();
-    if (!sinHover) {   // los menus que se abren al pasar el mouse tambien funcionan
-      var el = document.elementFromPoint(cur.x, cur.y);
-      if (el) {
-        var op = { bubbles: true, clientX: cur.x, clientY: cur.y, view: window };
-        try { el.dispatchEvent(new MouseEvent('mouseover', op)); el.dispatchEvent(new MouseEvent('mousemove', op)); } catch (e) {}
-      }
-    }
     clearTimeout(cur.oculto);
     cur.oculto = setTimeout(function () {
       if (!cur.el) return;
       var video = hayVideoReproduciendo();
       cur.el.style.opacity = video ? '0' : '0.4';   // en videos se esconde del todo
-      if (video) cur.marco.style.display = 'none';
+      if (video && cur.marco) cur.marco.style.display = 'none';
     }, 3500);
+  }
+
+  // Un solo dibujo por cuadro, aunque lleguen muchos eventos (touchpad)
+  function pedirDibujo() {
+    if (cur.pendiente) return;
+    cur.pendiente = true;
+    requestAnimationFrame(function () {
+      cur.pendiente = false;
+      crearCursor();
+      colocar();
+      mostrar();
+    });
   }
 
   // Mouse real: touchpad de la app del celular, mouse USB o Bluetooth
   window.addEventListener('mousemove', function (e) {
     if (!e.isTrusted) return;                     // ignorar los eventos que genera este mismo script
     cur.x = e.clientX; cur.y = e.clientY;
-    pintarCursor(true);
+    pedirDibujo();
+    alDetenerse(false);                           // el mouse real ya genera su propio hover
   }, true);
   window.addEventListener('mousedown', function (e) {
     if (e.isTrusted) ultimoClic = Date.now();    // un clic real tambien autoriza abrir enlaces
@@ -155,24 +188,57 @@
     return document.scrollingElement || document.documentElement;
   }
 
-  function scroll(dy) {
-    var c = contenedorScroll(cur.x, cur.y);
-    c.scrollBy ? c.scrollBy({ top: dy, behavior: 'smooth' }) : (c.scrollTop += dy);
-    setTimeout(resaltar, 350);
+  var scrollCache = { el: null, t: 0 };
+  function scroll(dy, suave) {
+    var ahora = Date.now();
+    if (!scrollCache.el || ahora - scrollCache.t > 400) scrollCache.el = contenedorScroll(cur.x, cur.y);
+    scrollCache.t = ahora;
+    var c = scrollCache.el;
+    if (suave && c.scrollBy) c.scrollBy({ top: dy, behavior: 'smooth' });
+    else c.scrollTop += dy;                        // instantaneo: sin retraso
   }
 
-  function mover(dx, dy) {
-    var ahora = Date.now();
-    cur.vel = (ahora - cur.ultimaTecla < 180) ? Math.min(cur.vel * 1.25, 70) : 12;
-    cur.ultimaTecla = ahora;
-    // Precision: encima de algo pulsable el cursor frena para no pasarse
-    var paso = objetivo() && cur.vel > 20 ? cur.vel * 0.55 : cur.vel;
-    var w = window.innerWidth, h = window.innerHeight, borde = 30;
-    cur.x = Math.max(0, Math.min(w - 1, cur.x + dx * paso));
-    cur.y = Math.max(0, Math.min(h - 1, cur.y + dy * paso));
-    if (dy > 0 && cur.y >= h - borde) scroll(Math.max(cur.vel * 4, 120));
-    if (dy < 0 && cur.y <= borde) scroll(-Math.max(cur.vel * 4, 120));
-    pintarCursor();
+  // ---- Movimiento continuo con flechas (requestAnimationFrame) ----
+  function paso(t) {
+    if (!cur.dx && !cur.dy) { cur.bucle = false; alDetenerse(true); return; }
+    // si el control dejo de mandar teclas (keyup perdido), frenar
+    if (Date.now() - cur.teclaVista > 650) { cur.dx = cur.dy = 0; cur.bucle = false; alDetenerse(true); return; }
+    var dt = Math.min(0.05, (t - (cur.ultimoFrame || t)) / 1000);
+    cur.ultimoFrame = t;
+    var progreso = Math.min(1, (t - cur.inicioMov) / 1000 / ACELERACION);
+    var v = VEL_INICIAL + (VEL_MAX - VEL_INICIAL) * progreso * progreso;
+    var w = window.innerWidth, h = window.innerHeight, borde = 24;
+    cur.x = Math.max(0, Math.min(w - 1, cur.x + cur.dx * v * dt));
+    var ny = cur.y + cur.dy * v * dt;
+    if (ny > h - borde && cur.dy > 0) { scroll(v * dt * 1.6); ny = h - borde; }
+    if (ny < borde && cur.dy < 0) { scroll(-v * dt * 1.6); ny = borde; }
+    cur.y = Math.max(0, Math.min(h - 1, ny));
+    colocar();
+    requestAnimationFrame(paso);
+  }
+
+  function empezarMovimiento(dx, dy) {
+    crearCursor();
+    mostrar();
+    var nueva = (dx !== cur.dx || dy !== cur.dy);
+    cur.teclaVista = Date.now();
+    if (!nueva && cur.bucle) return;              // tecla repetida: el bucle ya esta corriendo
+    cur.dx = dx; cur.dy = dy;
+    // Toque corto: salto inmediato de 22 px para que responda al instante
+    cur.x = Math.max(0, Math.min(window.innerWidth - 1, cur.x + dx * 22));
+    cur.y = Math.max(0, Math.min(window.innerHeight - 1, cur.y + dy * 22));
+    colocar();
+    if (cur.marco) cur.marco.style.display = 'none';
+    if (!cur.bucle) {
+      cur.bucle = true;
+      cur.inicioMov = performance.now() + 120;     // pequena pausa antes de acelerar (precision)
+      cur.ultimoFrame = 0;
+      requestAnimationFrame(paso);
+    }
+  }
+
+  function pararMovimiento() {
+    cur.dx = cur.dy = 0;
   }
 
   function clic() {
@@ -196,7 +262,7 @@
       cur.el.style.transform = 'scale(.8)';
       setTimeout(function () { if (cur.el) cur.el.style.transform = ''; }, 120);
     }
-    setTimeout(resaltar, 300);
+    setTimeout(resaltar, 250);
   }
 
   function videoPrincipal() {
@@ -321,7 +387,7 @@
       case 'zoommenos': menu.zoom = Math.max(0.5, Math.round((menu.zoom - 0.1) * 10) / 10); aplicarZoom(); break;
       case 'inicio': cerrarMenu(); location.href = FAVORITOS[0].u; break;
       case 'arriba': cerrarMenu(); (document.scrollingElement || document.documentElement).scrollTo({ top: 0, behavior: 'smooth' }); break;
-      case 'cursor': cerrarMenu(); cur.x = window.innerWidth / 2; cur.y = window.innerHeight / 2; pintarCursor(); break;
+      case 'cursor': cerrarMenu(); cur.x = window.innerWidth / 2; cur.y = window.innerHeight / 2; pedirDibujo(); alDetenerse(true); break;
       case 'video':
         var v = videoPrincipal();
         cerrarMenu();
@@ -354,13 +420,13 @@
       else manejada = false;
     }
     else if (escribiendo() && c !== K.ATRAS) { return; }     // dejar escribir en la pagina
-    else if (c === K.IZQ) mover(-1, 0);
-    else if (c === K.DER) mover(1, 0);
-    else if (c === K.ARRIBA) mover(0, -1);
-    else if (c === K.ABAJO) mover(0, 1);
+    else if (c === K.IZQ) empezarMovimiento(-1, 0);
+    else if (c === K.DER) empezarMovimiento(1, 0);
+    else if (c === K.ARRIBA) empezarMovimiento(0, -1);
+    else if (c === K.ABAJO) empezarMovimiento(0, 1);
     else if (c === K.OK) clic();
-    else if (c === K.CANAL_MAS) scroll(-window.innerHeight * 0.85);
-    else if (c === K.CANAL_MENOS) scroll(window.innerHeight * 0.85);
+    else if (c === K.CANAL_MAS) scroll(-window.innerHeight * 0.85, true);
+    else if (c === K.CANAL_MENOS) scroll(window.innerHeight * 0.85, true);
     else if (c === K.ADELANTAR || c === K.ATRASAR) {
       var v = videoPrincipal();
       if (v) v.currentTime = Math.max(0, v.currentTime + (c === K.ADELANTAR ? 10 : -10));
@@ -374,11 +440,15 @@
     if (manejada) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
 
+  window.addEventListener('keyup', function (e) {
+    if (e.keyCode >= 37 && e.keyCode <= 40) pararMovimiento();
+  }, true);
+
   // ---------------------------------------------------------------- ARRANQUE
   function alCargar() {
     inyectarCSS();
     crearCursor();
-    pintarCursor();
+    pedirDibujo();
     aplicarZoom();
     var esInicio = /^https:\/\/www\.google\.com\/?$/.test(location.href);
     if (esInicio && history.length <= 1) abrirMenu();
@@ -386,5 +456,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', alCargar);
   else alCargar();
   // Por si la pagina reemplaza el <html> o borra el cursor
-  setInterval(function () { inyectarCSS(); crearCursor(); }, 3000);
+  setInterval(function () { if (!document.hidden) { inyectarCSS(); crearCursor(); } }, 3000);
 })();
