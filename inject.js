@@ -36,21 +36,268 @@
             PLAYPAUSA: 10252, CANAL_MAS: 427, CANAL_MENOS: 428, ADELANTAR: 417, ATRASAR: 412 };
 
   // ---------------------------------------------------------------- BLOQUEO
-  // 1) Pop-ups: window.open abre en la misma pestana solo si viene de un clic tuyo
+  // Los anuncios de pantalla completa que "se meten" son casi siempre:
+  //   (a) ventanas emergentes (popunder) que se abren con tu primer clic,
+  //   (b) redirecciones forzadas: la pagina te manda a otro sitio sin que lo pidieras,
+  //   (c) capas invisibles encima del video que capturan tu clic.
+  // Este escudo bloquea las tres. Regla: solo se abre otro sitio si TU elegiste
+  // un enlace que apunta ahi (o lo escribiste en el menu).
+
+  function host(url) {
+    try { return new URL(url, location.href).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+  }
+  function mismoSitio(a, b) {   // ej. video.sitio.com y sitio.com cuentan como el mismo
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var pa = a.split('.').slice(-2).join('.'), pb = b.split('.').slice(-2).join('.');
+    return pa === pb;
+  }
+
   var ultimoClic = 0;
+  var intencion = { host: '', t: 0 };          // a donde quisiste ir tu (enlace que pulsaste)
+  function autorizar(url) { intencion.host = host(url); intencion.t = Date.now(); }
+  function autorizado(url) {
+    var h = host(url);
+    return mismoSitio(h, host(location.href)) ||
+           (Date.now() - intencion.t < 4000 && mismoSitio(h, intencion.host));
+  }
+
+  var escudo = true;   // se puede apagar por sitio desde el menu
+  try { escudo = localStorage.getItem('navAlejandroEscudoOff') !== '1'; } catch (e) {}
+
+  var bloqueados = 0;
+  function avisoBloqueo(texto, sinNumero) {
+    if (!sinNumero) bloqueados++;
+    try {
+      var t = document.getElementById('nav-alejandro-toast');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'nav-alejandro-toast';
+        t.style.cssText = 'position:fixed;top:24px;right:24px;z-index:2147483647;pointer-events:none;' +
+          'background:rgba(10,18,32,.92);color:#fff;font:600 20px Arial,sans-serif;padding:12px 20px;' +
+          'border-radius:14px;border:2px solid ' + COLOR + ';transition:opacity .3s;opacity:0';
+        document.documentElement.appendChild(t);
+      }
+      t.textContent = '🛡 ' + texto + (sinNumero ? '' : ' (' + bloqueados + ')');
+      t.style.opacity = '1';
+      clearTimeout(t._o);
+      t._o = setTimeout(function () { t.style.opacity = '0'; }, 1800);
+    } catch (e) {}
+  }
+
+  // (a) Ventanas emergentes: nunca se abren ventanas nuevas.
+  //     Si es un enlace que TU pulsaste hacia ese mismo destino, se abre en la misma pestana.
   window.open = function (url) {
-    if (url && Date.now() - ultimoClic < 1000) { location.href = url; }
-    return null;   // las ventanas que se abren solas se descartan
+    if (!escudo) { if (url) location.href = url; return null; }
+    if (url && Date.now() - ultimoClic < 1000 && autorizado(url)) { location.href = url; }
+    else avisoBloqueo('Ventana emergente bloqueada');
+    return null;
   };
-  // 2) Anuncios visuales (los de red ya los bloquea el DNS de AdGuard)
+
+  // Registrar a donde apunta el enlace que pulsas (control, touchpad o mouse)
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (a) {
+      if (a.target && a.target !== '_self') a.target = '_self';   // nada de pestanas nuevas
+      autorizar(a.href);
+    }
+  }, true);
+  document.addEventListener('submit', function (e) {   // formularios (buscadores) tambien valen
+    try { autorizar(e.target.action || location.href); } catch (err) {}
+  }, true);
+
+  // (b) Redirecciones forzadas: se cancelan si van a otro sitio que tu no elegiste
+  if (window.navigation && navigation.addEventListener) {
+    navigation.addEventListener('navigate', function (e) {
+      if (!escudo || !e.cancelable) return;
+      if (e.navigationType === 'traverse' || e.navigationType === 'reload') return;  // Atras / recargar
+      if (autorizado(e.destination.url)) return;
+      e.preventDefault();
+      avisoBloqueo('Redirección a ' + host(e.destination.url) + ' bloqueada');
+    });
+  }
+
+  // (c) Capas invisibles o gigantes que tapan la pagina para robar el clic
+  function esTrampa(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    var st = getComputedStyle(el);
+    if (st.position !== 'fixed' && st.position !== 'absolute') return false;
+    var r = el.getBoundingClientRect();
+    var grande = r.width * r.height > window.innerWidth * window.innerHeight * 0.25;
+    if (!grande) return false;
+    var invisible = parseFloat(st.opacity) < 0.15 ||
+      (st.backgroundColor === 'rgba(0, 0, 0, 0)' && !el.textContent.trim() && !el.querySelector('img,video,canvas,svg'));
+    var enlaceAfuera = el.tagName === 'A' && el.href && !mismoSitio(host(el.href), host(location.href));
+    return invisible || enlaceAfuera;
+  }
+  function quitarTrampas(x, y) {
+    if (!escudo) return;
+    for (var i = 0; i < 5; i++) {           // puede haber varias capas apiladas
+      var el = document.elementFromPoint(x, y), quitado = false;
+      for (var n = el; n && n !== document.body; n = n.parentElement) {
+        if (n.tagName === 'VIDEO') break;   // nunca tocar el video
+        if (esTrampa(n)) { n.remove(); quitado = true; avisoBloqueo('Capa de anuncio quitada'); break; }
+      }
+      if (!quitado) return;
+    }
+  }
+
+  // ================================================================ BLOQUEADOR DE SCRIPTS
+  // Igual que Brave/uBlock: los scripts, iframes, pixeles y peticiones de redes de
+  // anuncios y rastreo se bloquean ANTES de ejecutarse. Corre al inicio de cada pagina.
+  var LISTA_BLOQUEO = [
+    // Google y grandes redes
+    'doubleclick.net', 'googlesyndication.com', 'googleadservices.com', 'adservice.google.com',
+    'google-analytics.com', 'amazon-adsystem.com', 'adnxs.com', 'criteo.com', 'criteo.net',
+    'taboola.com', 'outbrain.com', 'adform.net', 'rubiconproject.com', 'pubmatic.com', 'openx.net',
+    'casalemedia.com', 'smartadserver.com', 'moatads.com', 'adsafeprotected.com', 'doubleverify.com',
+    'scorecardresearch.com', 'quantserve.com', 'media.net', 'adroll.com', 'teads.tv', 'sharethrough.com',
+    '33across.com', 'spotxchange.com', 'springserve.com', 'lijit.com', 'sovrn.com', 'zedo.com',
+    'mgid.com', 'revcontent.com', 'adskeeper.com', 'adskeeper.co.uk', 'disqusads.com', 'hotjar.com',
+    'mc.yandex.ru', 'an.yandex.ru', 'onesignal.com',
+    // Popunders, redirecciones y anuncios agresivos (tambien se buscan dentro de scripts en linea)
+    'popads.net', 'popcash.net', 'propellerads.com', 'propellerclick.com', 'adsterra.com',
+    'highperformanceformat.com', 'exoclick.com', 'exosrv.com', 'realsrv.com', 'juicyads.com',
+    'trafficjunky.net', 'trafficstars.com', 'tsyndicate.com', 'hilltopads.net', 'clickadu.com',
+    'adcash.com', 'onclickads.net', 'admaven.com', 'ad-maven.com', 'richads.com', 'galaksion.com',
+    'pushground.com', 'monetag.com', 'a-ads.com', 'bidvertiser.com', 'adspyglass.com', 'popmyads.com'
+  ];
+  var bloqueoActivo = true;
+  try { bloqueoActivo = localStorage.getItem('navAlejandroEscudoOff') !== '1'; } catch (e) {}
+  var DOMS = {};
+  LISTA_BLOQUEO.forEach(function (d) { DOMS[d] = 1; });
+  // Solo las redes de popunder se buscan dentro de scripts en linea (las grandes, como Google,
+  // aparecen mencionadas en scripts normales de muchas paginas y bloquearlas las romperia)
+  var AGRESIVAS = LISTA_BLOQUEO.slice(LISTA_BLOQUEO.indexOf('popads.net'));
+  var RE_TEXTO = new RegExp(AGRESIVAS.map(function (d) { return d.replace(/\./g, '\\.'); }).join('|'));
+
+  function urlBloqueada(u) {
+    if (!bloqueoActivo || !u) return false;
+    var h;
+    try { h = new URL(String(u), location.href).hostname; } catch (e) { return false; }
+    var p = h.split('.');
+    for (var i = 0; i < p.length - 1; i++) if (DOMS[p.slice(i).join('.')]) return true;
+    return false;
+  }
+
+  var scriptsBloqueados = 0, avisoPendiente = null;
+  function contar() {
+    scriptsBloqueados++;
+    if (avisoPendiente) return;   // un solo aviso cada 1.5 s, no uno por script
+    avisoPendiente = setTimeout(function () {
+      avisoPendiente = null;
+      avisoBloqueo(scriptsBloqueados + ' anuncios/rastreadores bloqueados', true);
+    }, 1500);
+  }
+
+  function nodoBloqueado(n) {
+    if (!n || n.nodeType !== 1) return false;
+    var t = n.tagName;
+    if (t === 'SCRIPT') {
+      if (n.src ? urlBloqueada(n.src) : (bloqueoActivo && RE_TEXTO.test(n.textContent || ''))) return true;
+    } else if (t === 'IFRAME' || t === 'IMG' || t === 'EMBED' || t === 'OBJECT') {
+      if (urlBloqueada(n.src || n.data)) return true;
+    } else if (t === 'LINK') {
+      if (/preload|prefetch|preconnect|dns-prefetch/i.test(n.rel || '') && urlBloqueada(n.href)) return true;
+    }
+    return false;
+  }
+
+  // 1) Scripts que vienen en el HTML: se desactivan apenas aparecen (antes de ejecutarse)
+  function revisarNodo(n) {
+    if (nodoBloqueado(n)) {
+      if (n.tagName === 'SCRIPT') n.type = 'javascript/bloqueado';
+      if (n.parentNode) n.parentNode.removeChild(n);
+      contar();
+    }
+  }
+  try {
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var a = muts[i].addedNodes;
+        for (var j = 0; j < a.length; j++) {
+          revisarNodo(a[j]);
+          if (a[j].querySelectorAll) {
+            var hijos = a[j].querySelectorAll('script,iframe,img,embed,object,link');
+            for (var k = 0; k < hijos.length; k++) revisarNodo(hijos[k]);
+          }
+        }
+      }
+    }).observe(document, { childList: true, subtree: true });
+  } catch (e) {}
+
+  // 2) Scripts e iframes que la pagina mete despues con JavaScript
+  ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {
+    var orig = Node.prototype[m];
+    Node.prototype[m] = function (n) {
+      if (nodoBloqueado(n)) { contar(); return n; }
+      return orig.apply(this, arguments);
+    };
+  });
+  ['append', 'prepend', 'after', 'before'].forEach(function (m) {
+    var orig = Element.prototype[m];
+    if (!orig) return;
+    Element.prototype[m] = function () {
+      var args = Array.prototype.filter.call(arguments, function (n) {
+        if (nodoBloqueado(n)) { contar(); return false; } return true;
+      });
+      return orig.apply(this, args);
+    };
+  });
+  function protegerSrc(proto, prop) {
+    var d = proto && Object.getOwnPropertyDescriptor(proto, prop);
+    if (!d || !d.set) return;
+    Object.defineProperty(proto, prop, {
+      configurable: true, enumerable: d.enumerable, get: d.get,
+      set: function (v) { if (urlBloqueada(v)) { contar(); return; } d.set.call(this, v); }
+    });
+  }
+  protegerSrc(window.HTMLScriptElement && HTMLScriptElement.prototype, 'src');
+  protegerSrc(window.HTMLIFrameElement && HTMLIFrameElement.prototype, 'src');
+  protegerSrc(window.HTMLImageElement && HTMLImageElement.prototype, 'src');
+  var setAttrOrig = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (nombre, valor) {
+    if ((nombre === 'src' || nombre === 'href' || nombre === 'data') && /^(SCRIPT|IFRAME|IMG|EMBED|OBJECT)$/.test(this.tagName) && urlBloqueada(valor)) {
+      contar(); return;
+    }
+    return setAttrOrig.apply(this, arguments);
+  };
+
+  // 3) Peticiones de red de anuncios y rastreo (fetch, XHR, beacons)
+  if (window.fetch) {
+    var fetchOrig = window.fetch;
+    window.fetch = function (r) {
+      var u = r && r.url ? r.url : r;
+      if (urlBloqueada(u)) { contar(); return Promise.reject(new TypeError('Bloqueado')); }
+      return fetchOrig.apply(this, arguments);
+    };
+  }
+  var xhrOpen = XMLHttpRequest.prototype.open, xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, u) {
+    this.__bloq = urlBloqueada(u);
+    return xhrOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function () {
+    if (this.__bloq) { contar(); try { this.abort(); } catch (e) {} return; }
+    return xhrSend.apply(this, arguments);
+  };
+  if (navigator.sendBeacon) {
+    var beaconOrig = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = function (u) { if (urlBloqueada(u)) { contar(); return true; } return beaconOrig.apply(null, arguments); };
+  }
+
+  // Anuncios visuales comunes (los de red los bloquea el DNS de AdGuard)
+  var REDES = ['doubleclick', 'googlesyndication', 'adservice', 'popads', 'popcash', 'propellerads',
+    'adsterra', 'exoclick', 'juicyads', 'hilltopads', 'clickadu', 'monetag', 'a-ads', 'bidvertiser',
+    'adcash', 'trafficstars', 'onclickads', 'admaven', 'richads', 'pushground', 'galaksion'];
   var CSS_ANUNCIOS = [
-    'ins.adsbygoogle', '.adsbygoogle', '[id^="google_ads"]', '[id^="div-gpt-ad"]',
-    'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]', 'iframe[src*="adservice"]',
+    'ins.adsbygoogle', '.adsbygoogle', '[id^="google_ads"]', '[id^="div-gpt-ad"]', '[id^="aswift"]',
     'iframe[id*="google_ads"]', '[class*="ad-banner"]', '[class*="advert"]', '[id*="advert"]',
     '[class*="sponsored"]', '[data-ad]', '[data-ad-slot]', '.ad-container', '.ad-slot',
     '[aria-label="Advertisement"]', '[aria-label="Publicidad"]', '.taboola', '[id^="taboola"]',
     '.OUTBRAIN', '[id^="outbrain"]', '[class*="cookie-banner"]', '[id*="cookie-banner"]'
-  ].join(',') + '{display:none!important;visibility:hidden!important}';
+  ].concat(REDES.map(function (r) { return 'iframe[src*="' + r + '"],a[href*="' + r + '"]'; }))
+   .join(',') + '{display:none!important;visibility:hidden!important;pointer-events:none!important}';
 
   function inyectarCSS() {
     if (document.getElementById('nav-alejandro-css')) return;
@@ -59,11 +306,6 @@
     s.textContent = CSS_ANUNCIOS;
     (document.head || document.documentElement).appendChild(s);
   }
-  // 3) Enlaces que abren pestana nueva -> misma pestana
-  document.addEventListener('click', function (e) {
-    var a = e.target && e.target.closest ? e.target.closest('a[target]') : null;
-    if (a && a.target !== '_self') a.target = '_self';
-  }, true);
 
   // ---------------------------------------------------------------- CURSOR
   // Motor del cursor optimizado:
@@ -144,18 +386,23 @@
     }, 70);
   }
 
-  function mostrar() {
-    cur.el.style.opacity = '1';
-    clearTimeout(cur.oculto);
-    cur.oculto = setTimeout(function () {
-      if (!cur.el) return;
-      var video = hayVideoReproduciendo();
-      cur.el.style.opacity = video ? '0' : '0.4';   // en videos se esconde del todo
-      if (video && cur.marco) cur.marco.style.display = 'none';
-    }, 3500);
+  var opacidad = '1', ultimaActividad = 0;
+  function ponerOpacidad(o) {
+    if (o !== opacidad && cur.el) { cur.el.style.opacity = o; opacidad = o; }
   }
+  function mostrar() {
+    ultimaActividad = Date.now();
+    ponerOpacidad('1');
+  }
+  // Un solo reloj revisa si hay que atenuar el cursor (en vez de crear un temporizador por evento)
+  setInterval(function () {
+    if (!cur.el || Date.now() - ultimaActividad < 3500) return;
+    var video = hayVideoReproduciendo();
+    ponerOpacidad(video ? '0' : '0.4');            // en videos se esconde del todo
+    if (video && cur.marco) cur.marco.style.display = 'none';
+  }, 500);
 
-  // Un solo dibujo por cuadro, aunque lleguen muchos eventos (touchpad)
+  // Un solo dibujo por cuadro, aunque lleguen muchos eventos
   function pedirDibujo() {
     if (cur.pendiente) return;
     cur.pendiente = true;
@@ -167,15 +414,56 @@
     });
   }
 
-  // Mouse real: touchpad de la app del celular, mouse USB o Bluetooth
+  // Mouse real: touchpad de la app del celular, mouse USB o Bluetooth.
+  // La app del celular manda pocas posiciones por segundo (se ve "a saltos").
+  // Para que se vea fluido, el cursor se DESLIZA a 60 fps hacia la ultima posicion
+  // recibida, prediciendo un poco el movimiento segun la velocidad del dedo.
+  var raton = { tx: 960, ty: 540, vx: 0, vy: 0, t: 0, bucle: false };
+  var SUAVIZADO = 0.55;   // 0..1: mas alto = mas pegado al dedo, mas bajo = mas suave
+  function deslizar() {
+    var ex = raton.tx - cur.x, ey = raton.ty - cur.y;
+    if (Math.abs(ex) < 0.5 && Math.abs(ey) < 0.5) {
+      cur.x = raton.tx; cur.y = raton.ty; colocar(); raton.bucle = false; return;
+    }
+    cur.x += ex * SUAVIZADO; cur.y += ey * SUAVIZADO;
+    colocar();
+    requestAnimationFrame(deslizar);
+  }
   window.addEventListener('mousemove', function (e) {
     if (!e.isTrusted) return;                     // ignorar los eventos que genera este mismo script
-    cur.x = e.clientX; cur.y = e.clientY;
-    pedirDibujo();
-    alDetenerse(false);                           // el mouse real ya genera su propio hover
+    var ahora = performance.now(), dt = ahora - raton.t;
+    if (dt > 0 && dt < 120) {                     // velocidad del dedo para anticipar un poco
+      raton.vx = (e.clientX - raton.tx) / dt; raton.vy = (e.clientY - raton.ty) / dt;
+    } else { raton.vx = raton.vy = 0; }
+    raton.t = ahora;
+    var w = window.innerWidth, h = window.innerHeight, pred = Math.min(dt, 40);
+    raton.tx = Math.max(0, Math.min(w - 1, e.clientX + raton.vx * pred * 0.5));
+    raton.ty = Math.max(0, Math.min(h - 1, e.clientY + raton.vy * pred * 0.5));
+    crearCursor();
+    mostrar();
+    if (!raton.bucle) { raton.bucle = true; requestAnimationFrame(deslizar); }
+    if (cur.marco && cur.marco.style.display !== 'none') cur.marco.style.display = 'none';
+    alDetenerseRaton();
   }, true);
+  // Al detener el dedo: posicion exacta (sin prediccion) y resaltado
+  var quietoRaton = null;
+  function alDetenerseRaton() {
+    clearTimeout(quietoRaton);
+    quietoRaton = setTimeout(function () {
+      raton.tx = Math.round(raton.tx - raton.vx * 20); raton.ty = Math.round(raton.ty - raton.vy * 20);
+      raton.vx = raton.vy = 0;
+      if (!raton.bucle) { raton.bucle = true; requestAnimationFrame(deslizar); }
+      setTimeout(resaltar, 60);
+    }, 90);
+  }
   window.addEventListener('mousedown', function (e) {
-    if (e.isTrusted) ultimoClic = Date.now();    // un clic real tambien autoriza abrir enlaces
+    if (!e.isTrusted) return;
+    ultimoClic = Date.now();                     // un clic real tambien autoriza abrir enlaces
+    var antes = document.elementFromPoint(e.clientX, e.clientY);
+    quitarTrampas(e.clientX, e.clientY);
+    if (antes && !document.documentElement.contains(antes)) {   // era una trampa: no dejar pasar el clic
+      e.preventDefault(); e.stopImmediatePropagation();
+    }
   }, true);
 
   function contenedorScroll(x, y) {
@@ -243,6 +531,7 @@
 
   function clic() {
     ultimoClic = Date.now();
+    quitarTrampas(cur.x, cur.y);
     var el = document.elementFromPoint(cur.x, cur.y);
     if (!el) return;
     var op = { bubbles: true, cancelable: true, view: window, clientX: cur.x, clientY: cur.y };
@@ -274,6 +563,28 @@
     return mejor;
   }
 
+  // Borra lo que el sitio guardo en el TV (cookies, almacenamiento, cache, service workers)
+  function limpiarSitio() {
+    try { localStorage.clear(); } catch (e) {}
+    try { sessionStorage.clear(); } catch (e) {}
+    try {
+      document.cookie.split(';').forEach(function (c) {
+        var n = c.split('=')[0].trim(); if (!n) return;
+        var partes = location.hostname.split('.');
+        for (var i = 0; i < partes.length - 1; i++) {
+          var dom = partes.slice(i).join('.');
+          document.cookie = n + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=' + dom;
+        }
+        document.cookie = n + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+      });
+    } catch (e) {}
+    var tareas = [];
+    try { if (window.caches) tareas.push(caches.keys().then(function (k) { return Promise.all(k.map(function (n) { return caches.delete(n); })); })); } catch (e) {}
+    try { if (navigator.serviceWorker) tareas.push(navigator.serviceWorker.getRegistrations().then(function (r) { r.forEach(function (x) { x.unregister(); }); })); } catch (e) {}
+    try { if (window.indexedDB && indexedDB.databases) tareas.push(indexedDB.databases().then(function (d) { d.forEach(function (x) { indexedDB.deleteDatabase(x.name); }); })); } catch (e) {}
+    Promise.all(tareas).catch(function () {}).then(function () { location.reload(); });
+  }
+
   // ---------------------------------------------------------------- MENU
   var menu = { host: null, root: null, abierto: false, items: [], idx: 0, zoom: 1 };
   try { menu.zoom = parseFloat(localStorage.getItem('navAlejandroZoom')) || 1; } catch (e) {}
@@ -288,6 +599,7 @@
     if (!texto) return;
     var url = /^https?:\/\//i.test(texto) ? texto
       : (/^[\w-]+(\.[\w-]+)+(\/.*)?$/.test(texto) ? 'https://' + texto : BUSCADOR + encodeURIComponent(texto));
+    autorizar(url);
     location.href = url;
   }
 
@@ -329,6 +641,8 @@
       '<button class="it" data-a="video">⛶ Video completo</button>' +
       '<button class="it" data-a="arriba">⤒ Ir arriba</button>' +
       '<button class="it" data-a="cursor">✛ Centrar cursor</button>' +
+      '<button class="it" data-a="escudo">' + (escudo ? '🛡 Escudo: ON' : '🛡 Escudo: OFF') + '</button>' +
+      '<button class="it" data-a="limpiar">🧹 Limpiar sitio</button>' +
       '</div>' +
       '<div class="ayuda">Flechas: moverse · OK: elegir · Play/Pausa o Atrás: cerrar menú</div>' +
       '</div></div>';
@@ -379,13 +693,20 @@
   function activarMenu() {
     var b = menu.items[menu.idx];
     if (b.id === 'buscar') { b.focus(); return; }   // abre el teclado del TV
-    if (b.dataset.u) { cerrarMenu(); location.href = b.dataset.u; return; }
+    if (b.dataset.u) { cerrarMenu(); autorizar(b.dataset.u); location.href = b.dataset.u; return; }
     switch (b.dataset.a) {
       case 'atras': cerrarMenu(); history.back(); break;
       case 'recargar': location.reload(); break;
       case 'zoommas': menu.zoom = Math.min(2, Math.round((menu.zoom + 0.1) * 10) / 10); aplicarZoom(); break;
       case 'zoommenos': menu.zoom = Math.max(0.5, Math.round((menu.zoom - 0.1) * 10) / 10); aplicarZoom(); break;
-      case 'inicio': cerrarMenu(); location.href = FAVORITOS[0].u; break;
+      case 'inicio': cerrarMenu(); autorizar(FAVORITOS[0].u); location.href = FAVORITOS[0].u; break;
+      case 'escudo':
+        escudo = !escudo;
+        try { escudo ? localStorage.removeItem('navAlejandroEscudoOff') : localStorage.setItem('navAlejandroEscudoOff', '1'); } catch (e) {}
+        b.textContent = escudo ? '🛡 Escudo: ON' : '🛡 Escudo: OFF';
+        setTimeout(function () { location.reload(); }, 400);   // aplica el cambio al bloqueador
+        break;
+      case 'limpiar': limpiarSitio(); break;
       case 'arriba': cerrarMenu(); (document.scrollingElement || document.documentElement).scrollTo({ top: 0, behavior: 'smooth' }); break;
       case 'cursor': cerrarMenu(); cur.x = window.innerWidth / 2; cur.y = window.innerHeight / 2; pedirDibujo(); alDetenerse(true); break;
       case 'video':
@@ -419,7 +740,10 @@
       else if (c >= 37 && c <= 40) moverMenu(c);
       else manejada = false;
     }
-    else if (escribiendo() && c !== K.ATRAS) { return; }     // dejar escribir en la pagina
+    else if (escribiendo()) {                                 // dejar escribir sin interferir
+      if (c !== K.ATRAS) return;
+      document.activeElement.blur();                          // Atras: solo cierra el teclado
+    }
     else if (c === K.IZQ) empezarMovimiento(-1, 0);
     else if (c === K.DER) empezarMovimiento(1, 0);
     else if (c === K.ARRIBA) empezarMovimiento(0, -1);
@@ -458,3 +782,4 @@
   // Por si la pagina reemplaza el <html> o borra el cursor
   setInterval(function () { if (!document.hidden) { inyectarCSS(); crearCursor(); } }, 3000);
 })();
+
