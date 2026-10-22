@@ -1,0 +1,14 @@
+{
+  "name": "navegador-tv",
+  "appName": "Navegador Alejandro",
+  "version": "1.8.1",
+  "description": "Navegador para el TV: modo PC, barra y guias como Samsung, bloqueador tipo Brave con ventanas falsas y caja de arena, control de video, inicio con clima y dolar, favoritos, historial, modo oscuro, lectura y ahorro.",
+  "packageType": "mods",
+  "websiteURL": "https://caceres0128.github.io/navegador-tv/",
+  "main": "inject.js",
+  "evaluateScriptOnDocumentStart": true,
+  "modoEscritorio": true,
+  "keys": ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind",
+           "ColorF0Red", "ColorF1Green", "ColorF2Yellow", "ColorF3Blue",
+           "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+}
